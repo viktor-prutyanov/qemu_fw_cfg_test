@@ -11,25 +11,35 @@ MODULE_VERSION("0.1");
  
 #define FW_CFG_CTRL_OFF 0x00
 #define FW_CFG_DATA_OFF 0x01
+#define FW_CFG_DMA_OFF 	0x04
+
+#define FW_CFG_ID	0x01
 #define FW_CFG_FILE_DIR 0x19
 
 #define FW_CFG_SIG_SIZE 4
 #define FW_CFG_MAX_FILE_PATH 56
 
-#define MY_PATH "opt/qemu/fwcfg_test"
+#define MY_PATH "opt/org.qemu/test_file"
 
 phys_addr_t fw_cfg_p_base;
 resource_size_t fw_cfg_p_size;
 void __iomem *fw_cfg_dev_base;
 void __iomem *fw_cfg_reg_ctrl;
 void __iomem *fw_cfg_reg_data;
+void __iomem *fw_cfg_reg_dma;
 
 typedef struct FWCfgFile {
     uint32_t  size;        /* file size */
     uint16_t  select;      /* write this to 0x510 to read it */
     uint16_t  reserved;
     char      name[FW_CFG_MAX_FILE_PATH];
-} FWCfgFile_t;
+} __attribute__((packed)) FWCfgFile_t;
+
+typedef struct FWCfgDmaAccess {
+    uint32_t control;
+    uint32_t length;
+    uint64_t address;
+} __attribute__((packed)) FWCfgDmaAccess;
 
 /* atomic access to fw_cfg device (potentially slow i/o, so using mutex) */
 static DEFINE_MUTEX(fw_cfg_dev_lock);
@@ -68,6 +78,16 @@ static void fw_cfg_test_cleanup(void)
 	release_region(fw_cfg_p_base, fw_cfg_p_size);
 }
 
+static u64 get_dma_reg(void)
+{
+	u64 dma_reg;
+
+	*((u32 *)&dma_reg) = ioread32(fw_cfg_reg_dma);
+	*(((u32 *)&dma_reg) + 1) = ioread32(fw_cfg_reg_dma + 4);
+	
+	return be64_to_cpu(dma_reg);
+}
+
 static void fw_cfg_test_show(void)
 {
 	u32 num;
@@ -76,6 +96,9 @@ static void fw_cfg_test_show(void)
 	u32 size = 0;
 	u16 select;
 	void *buf;
+	FWCfgDmaAccess *dma_access;
+	u64 dma_reg;
+	u64 addr;
 
 	fw_cfg_read_blob(FW_CFG_FILE_DIR, &num, 0, sizeof(num));
 	num = be32_to_cpu(num);
@@ -101,6 +124,33 @@ static void fw_cfg_test_show(void)
 		return;
 	fw_cfg_read_blob(select, buf, 0, size);
 	printk("fw_cfg_test: %.*s\n", size, (char *)buf);
+	
+	dma_access = kmalloc(sizeof(FWCfgDmaAccess), GFP_KERNEL);	
+	if (!dma_access) {
+		kfree(dma_access);
+		return;
+	}
+	dma_reg = get_dma_reg();
+	printk("fw_cfg_test: %llx\n", dma_reg);
+	memset(buf, '+', size);
+	dma_access->control = cpu_to_be32((((u32)select) << 16UL) | 0xA);
+	dma_access->length = cpu_to_be32(5);
+	dma_access->address = cpu_to_be64((u64)virt_to_phys((u8 *)buf));
+	addr = cpu_to_be64((u64)virt_to_phys((u8 *)dma_access));
+	printk("fw_cfg_test: addr = 0x%p\n", addr);
+	iowrite32(*((u32 *)(&addr)), fw_cfg_reg_dma);
+	iowrite32(*((u32 *)(&addr) + 1), fw_cfg_reg_dma + 4);
+	printk("fw_cfg_test: %.10s\n", (char *)buf);
+	dma_access->control = cpu_to_be32((((u32)select) << 16UL) | 0x18);
+	dma_access->length = cpu_to_be32(5);
+	dma_access->address = cpu_to_be64((u64)virt_to_phys((u8 *)buf));
+	addr = cpu_to_be64((u64)virt_to_phys((u8 *)dma_access));
+	printk("fw_cfg_test: addr = 0x%p\n", addr);
+	iowrite32(*((u32 *)(&addr)), fw_cfg_reg_dma);
+	iowrite32(*((u32 *)(&addr) + 1), fw_cfg_reg_dma + 4);
+	printk("fw_cfg_test: %.10s\n", (char *)buf);
+	
+	kfree(dma_access);
 	kfree(buf);
 }
 
@@ -108,6 +158,7 @@ static int fw_cfg_test_probe(struct platform_device *pdev)
 {
 	struct resource *range;
 	char sig[FW_CFG_SIG_SIZE];
+	u32 bitmap;
    	
 	printk("fw_cfg_test: %s name=%s\n", __func__, pdev->name);
 	range = platform_get_resource(pdev, IORESOURCE_IO, 0);
@@ -129,6 +180,7 @@ static int fw_cfg_test_probe(struct platform_device *pdev)
 	
 	fw_cfg_reg_ctrl = fw_cfg_dev_base + FW_CFG_CTRL_OFF;
 	fw_cfg_reg_data = fw_cfg_dev_base + FW_CFG_DATA_OFF;
+	fw_cfg_reg_dma  = fw_cfg_dev_base + FW_CFG_DMA_OFF;
 	
 	/* verify fw_cfg device signature */
 	fw_cfg_read_blob(0, sig, 0, FW_CFG_SIG_SIZE);
@@ -138,6 +190,9 @@ static int fw_cfg_test_probe(struct platform_device *pdev)
 		return -ENODEV;
 	} else
 		printk("fw_cfg_test: signature check OK\n");
+
+	fw_cfg_read_blob(FW_CFG_ID, &bitmap, 0, sizeof(bitmap));
+	printk("fw_cfg_test: bitmap = 0x%x\n", bitmap); 
 	
 	fw_cfg_test_show();
 
