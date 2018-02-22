@@ -19,7 +19,7 @@ MODULE_VERSION("0.1");
 #define FW_CFG_SIG_SIZE 4
 #define FW_CFG_MAX_FILE_PATH 56
 
-#define MY_PATH "opt/org.qemu/test_file"
+#define MY_PATH "etc/wcdh"
 
 phys_addr_t fw_cfg_p_base;
 resource_size_t fw_cfg_p_size;
@@ -88,6 +88,11 @@ static u64 get_dma_reg(void)
 	return be64_to_cpu(dma_reg);
 }
 
+typedef struct WCDHInfo {
+    uint64_t addr;
+    uint64_t size;
+} WCDHInfo;
+
 static void fw_cfg_test_show(void)
 {
 	u32 num;
@@ -99,6 +104,12 @@ static void fw_cfg_test_show(void)
 	FWCfgDmaAccess *dma_access;
 	u64 dma_reg;
 	u64 addr;
+	u64 test_addr = 0x3F3E3D3C3B3A3938;
+	u64 test_size = 0x3736353433323130;
+	WCDHInfo wcdh_info;
+
+	wcdh_info.size = test_size;
+	wcdh_info.addr = test_addr;
 
 	fw_cfg_read_blob(FW_CFG_FILE_DIR, &num, 0, sizeof(num));
 	num = be32_to_cpu(num);
@@ -133,6 +144,7 @@ static void fw_cfg_test_show(void)
 	dma_reg = get_dma_reg();
 	printk("fw_cfg_test: %llx\n", dma_reg);
 	memset(buf, '+', size);
+/*
 	dma_access->control = cpu_to_be32((((u32)select) << 16UL) | 0xA);
 	dma_access->length = cpu_to_be32(5);
 	dma_access->address = cpu_to_be64((u64)virt_to_phys((u8 *)buf));
@@ -141,15 +153,15 @@ static void fw_cfg_test_show(void)
 	iowrite32(*((u32 *)(&addr)), fw_cfg_reg_dma);
 	iowrite32(*((u32 *)(&addr) + 1), fw_cfg_reg_dma + 4);
 	printk("fw_cfg_test: %.10s\n", (char *)buf);
+*/
 	dma_access->control = cpu_to_be32((((u32)select) << 16UL) | 0x18);
-	dma_access->length = cpu_to_be32(5);
-	dma_access->address = cpu_to_be64((u64)virt_to_phys((u8 *)buf));
+	dma_access->length = cpu_to_be32(sizeof(wcdh_info));
+	dma_access->address = cpu_to_be64((u64)virt_to_phys((u8 *)(&wcdh_info)));
 	addr = cpu_to_be64((u64)virt_to_phys((u8 *)dma_access));
-	printk("fw_cfg_test: addr = 0x%p\n", addr);
+	printk("fw_cfg_test: phys_addr_be = 0x%p\n", addr);
 	iowrite32(*((u32 *)(&addr)), fw_cfg_reg_dma);
 	iowrite32(*((u32 *)(&addr) + 1), fw_cfg_reg_dma + 4);
-	printk("fw_cfg_test: %.10s\n", (char *)buf);
-	
+
 	kfree(dma_access);
 	kfree(buf);
 }
